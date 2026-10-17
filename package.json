@@ -1,0 +1,14 @@
+{
+  "name": "voice-commander",
+  "private": true,
+  "packageManager": "pnpm@10.34.7",
+  "scripts": {
+    "dev": "pnpm --parallel -r dev",
+    "dev:web": "pnpm --filter @vic/web dev",
+    "dev:agent": "pnpm --filter @vic/agent dev",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3"
+  }
+}

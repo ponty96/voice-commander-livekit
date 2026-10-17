@@ -1,0 +1,22 @@
+{
+  "name": "@vic/agent",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/agent.ts dev",
+    "start": "tsx src/agent.ts start",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@livekit/agents": "^1.0.51",
+    "@livekit/rtc-node": "^1.1.0",
+    "@vic/shared": "workspace:*",
+    "zod": "^4.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  }
+}
