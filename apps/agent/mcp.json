@@ -4,15 +4,13 @@
       "command": "mcp-grafana",
       "args": ["--disable-write"],
       "env": {
-        "GRAFANA_URL": "${GRAFANA_URL}",
-        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
+        "GRAFANA_URL": "${GRAFANA_URL}"
       }
     },
     "opensearch": {
-      "command": "uvx",
-      "args": ["opensearch-mcp-server-py"],
+      "command": "opensearch-mcp-server-py",
       "env": {
-        "OPENSEARCH_URL": "http://localhost:60489",
+        "OPENSEARCH_URL": "${OPENSEARCH_URL}",
         "OPENSEARCH_NO_AUTH": "true"
       }
     },

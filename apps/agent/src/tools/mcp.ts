@@ -19,7 +19,8 @@ export interface McpServerConnection {
   tools: Tool[];
 }
 
-const CONNECT_TIMEOUT_MS = 15_000;
+// Python servers can take 30s+ to start when Docker's CPUs are busy. The call doesn't wait on this.
+const CONNECT_TIMEOUT_MS = 60_000;
 
 export async function readMcpConfig(path: string): Promise<McpConfig> {
   try {

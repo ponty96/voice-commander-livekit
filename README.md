@@ -13,6 +13,27 @@ pnpm monorepo:
 3. `pnpm dev` runs both apps, or `pnpm dev:web` / `pnpm dev:agent` separately.
 4. Open http://localhost:3000, click Join, and talk.
 
+## Run in Docker, connected to Astronomy Shop
+
+`docker-compose.yml` runs the agent and the web app. The agent also joins Astronomy Shop's `opentelemetry-demo` network, so its MCP servers reach `http://grafana:3000/grafana` and `http://opensearch:9200` by service name. There are no host ports to track, and Astronomy Shop is unchanged.
+
+1. Start Astronomy Shop first, because its network has to exist.
+2. Export the LiveKit variables (and the Axiom ones if you use it) in your shell. Compose passes them through, and there is no `.env` file.
+3. Run `docker compose up -d --build`, then open http://localhost:3000. If something else already uses port 3000, use `WEB_PORT=3100 docker compose up -d`.
+4. Stop `pnpm dev` while the containers run. Otherwise two agents are registered and LiveKit picks either one for a call.
+
+The image installs `mcp-grafana` and `opensearch-mcp-server-py` with `uv tool install`, and it includes the system CA certificates that the LiveKit SDK needs. MCP servers connect in the background after the agent's greeting, so a call starts right away. In a busy Docker VM, OpenSearch's server can take 30 to 40 seconds before its tools appear (`[agent] tools: …`). Astronomy Shop's load generator uses most of Docker's CPU, which is also why the agent runs with `cpu_shares: 4096`.
+
+Check connectivity from inside the agent container:
+
+```bash
+docker compose exec agent node -e "fetch('http://grafana:3000/grafana/api/health').then(r => r.text()).then(console.log)"
+docker compose exec agent node -e "fetch('http://opensearch:9200/_cat/indices/otel-logs-*?v').then(r => r.text()).then(console.log)"
+docker compose logs agent | grep -E '\[mcp\]|\[agent\] tools'
+```
+
+To run the agent on your Mac with `pnpm dev` against the same stack, install the two MCP servers with `uv tool install mcp-grafana opensearch-mcp-server-py`, then export the URLs from `.env.example`. Grafana goes through the shop's proxy at `http://localhost:8080/grafana`. OpenSearch's host port is random, so the export looks it up.
+
 `apps/web/components/agents-ui` and `hooks/agents-ui` come from the LiveKit Agents UI shadcn registry (`components.json` has it as `@agents-ui`).
 
 
@@ -56,20 +77,21 @@ The three built-in tools (`search_logs`, `query_metrics`, `list_deploys`) are pl
 
 ### Add an MCP server
 
-Add it under `mcpServers` in [`apps/agent/mcp.json`](apps/agent/mcp.json), in the same format Claude Desktop and Cursor use. On each call the agent connects to every server, lists its tools (`tools/list`), and gives them to the LLM as `<server>__<tool>`, for example `grafana__query_prometheus`. Calls go through `tools/call` on the same connection, which closes when the call ends. A server that is missing a variable or fails to connect is skipped with a `[mcp] skipping ...` line, and the rest keep working.
+Add it under `mcpServers` in [`apps/agent/mcp.json`](apps/agent/mcp.json), in the same format Claude Desktop and Cursor use. On each call the agent connects to every server after its greeting, lists its tools (`tools/list`), and adds them to the LLM as `<server>__<tool>`, for example `grafana__query_prometheus`. Until then the LLM has only the custom tools. Calls go through `tools/call` on the same connection, which closes when the call ends. A server that is missing a variable or fails to connect is skipped with a `[mcp] skipping ...` line, and the rest keep working.
 
-**Local server (stdio).** This runs `uvx mcp-grafana` (it needs [uv](https://docs.astral.sh/uv/)) with the two variables passed through:
+**Local servers (stdio).** These run the installed `mcp-grafana` and `opensearch-mcp-server-py` commands (`uv tool install …`, already in the Docker image). `"command": "uvx"` with the package name in `args` works too, but it starts more slowly. Astronomy Shop's Grafana allows anonymous access, so it needs no token. For a Grafana that does, add `"GRAFANA_SERVICE_ACCOUNT_TOKEN": "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"` to `env`.
 
 ```json
 {
   "mcpServers": {
     "grafana": {
-      "command": "uvx",
-      "args": ["mcp-grafana"],
-      "env": {
-        "GRAFANA_URL": "${GRAFANA_URL}",
-        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
-      }
+      "command": "mcp-grafana",
+      "args": ["--disable-write"],
+      "env": { "GRAFANA_URL": "${GRAFANA_URL}" }
+    },
+    "opensearch": {
+      "command": "opensearch-mcp-server-py",
+      "env": { "OPENSEARCH_URL": "${OPENSEARCH_URL}", "OPENSEARCH_NO_AUTH": "true" }
     }
   }
 }
@@ -91,15 +113,15 @@ Add it under `mcpServers` in [`apps/agent/mcp.json`](apps/agent/mcp.json), in th
 }
 ```
 
-Both of these are already in `mcp.json`, and they stay skipped until their variables are set. OAuth-only servers aren't supported yet, and neither is the older SSE transport.
+All three are in `mcp.json`, and each one stays skipped until its variables are set. OAuth-only servers aren't supported yet, and neither is the older SSE transport.
 
 ### Credentials
 
 `${VAR}` anywhere in a server's `command`, `args`, `env`, `url` or `headers` is replaced with that environment variable. Nothing is read from files, so export the variables in the shell that runs the agent, the same way as the LiveKit ones (`.env.example` lists them):
 
 ```bash
-export GRAFANA_URL=https://yourorg.grafana.net
-export GRAFANA_SERVICE_ACCOUNT_TOKEN=glsa_...
+export GRAFANA_URL=http://localhost:8080/grafana
+export OPENSEARCH_URL=http://localhost:$(docker port opensearch 9200 | head -1 | cut -d: -f2)
 export AXIOM_PAT=xapt-...
 export AXIOM_ORG_ID=your-org
 ```
@@ -111,7 +133,8 @@ Resolved values are replaced with `***` in the terminal logs and in the events s
 Start a call (`pnpm dev`, then Join). The agent terminal prints one line per MCP server and the full tool list:
 
 ```text
-[mcp] grafana: <n> tools (search_dashboards, query_prometheus, ...)
+[mcp] grafana: 62 tools (alerting_manage_routing, ..., search_dashboards, ...)
+[mcp] opensearch: 9 tools (ListIndexTool, IndexMappingTool, SearchIndexTool, ...)
 [mcp] skipping axiom: set AXIOM_PAT, AXIOM_ORG_ID to enable it
 [agent] tools: search_logs, query_metrics, list_deploys, grafana__search_dashboards, ...
 ```
@@ -140,15 +163,22 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
 └─ defineAgent.entry(ctx)               src/agent.ts            runs once per room the agent is sent to
    ├─ [ctx.connect]                                             joins the room
    ├─ createPublisher(room)             src/tools/events.ts     sends StepEvents on vic.steps; never throws
-   ├─ loadTools({customTools, publish}) src/tools/index.ts      builds every tool the LLM gets
-   │  ├─ tools.config.ts (default)      tools.config.ts         custom tools, each made with defineTool()
-   │  │  └─ defineTool(tool)            src/tools/define.ts     keeps Zod types for execute(); returns the tool as-is
+   ├─ wrapCustomTools(tools, publish)   src/tools/index.ts      the custom tools as LLM tools, so the call starts without MCP
+   │  └─ tools.config.ts (default)      tools.config.ts         custom tools, each made with defineTool()
+   │     └─ defineTool(tool)            src/tools/define.ts     keeps Zod types for execute(); returns the tool as-is
+   ├─ new voice.Agent({instructions, tools})                    Commander's persona, starting with the custom tools
+   ├─ new voice.AgentSession({stt, llm, tts})                   Deepgram, GPT-4.1 mini, Cartesia via LiveKit Inference
+   ├─ session.on(...)                                           logs user transcripts, state changes and replies to the terminal
+   ├─ [session.start]                                           starts listening; publishes transcripts and lk.agent.state
+   ├─ [session.say]                                             speaks the greeting
+   ├─ loadTools({customTools, publish}) src/tools/index.ts      after the greeting: custom tools plus every MCP server's tools
+   │  ├─ wrapCustomTools(...)           src/tools/index.ts      as above, now with credentials redacted
    │  ├─ connectMcpServers(path)        src/tools/mcp.ts        reads mcp.json and connects to every server in parallel
    │  │  ├─ readMcpConfig(path)         src/tools/mcp.ts        parses mcp.json; no file means no servers
    │  │  ├─ resolveEnv(config)          src/tools/mcp.ts        fills ${VAR}s from the environment; skips servers missing any
    │  │  └─ connectMcpServer(name, cfg) src/tools/mcp.ts        connects over stdio or HTTP and pages through tools/list
    │  │     ├─ createTransport(cfg)     src/tools/mcp.ts        StdioClientTransport (keeps PATH) or StreamableHTTPClientTransport
-   │  │     └─ withTimeout(p, ms)       src/tools/mcp.ts        gives up on a server after 15s
+   │  │     └─ withTimeout(p, ms)       src/tools/mcp.ts        gives up on a server after 60s
    │  ├─ createRedactor(secrets)        src/tools/events.ts     replaces resolved credentials with ***
    │  ├─ mcpToolName(server, tool)      src/tools/mcp.ts        "<server>__<tool>", safe for the LLM
    │  ├─ [llm.tool] per tool                                    registers it; execute() calls runTool
@@ -159,13 +189,8 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    │  │     │  └─ callResultToText(res) src/tools/mcp.ts        joins the text content; throws if isError
    │  │     ├─ formatOutput(value)      src/tools/events.ts     strings as-is, anything else as JSON
    │  │     └─ publish(tool_end)                                same id, error: true if run() threw
-   │  └─ close()                        src/tools/index.ts      closes every MCP connection
-   ├─ [ctx.addShutdownCallback(close)]                          closes MCP connections when the call ends
-   ├─ new voice.Agent({instructions, tools})                    Commander's persona and tools
-   ├─ new voice.AgentSession({stt, llm, tts})                   Deepgram, GPT-4.1 mini, Cartesia via LiveKit Inference
-   ├─ session.on(...)                                           logs user transcripts, state changes and replies to the terminal
-   ├─ [session.start]                                           starts listening; publishes transcripts and lk.agent.state
-   └─ [session.say]                                             speaks the greeting
+   │  └─ close()                        src/tools/index.ts      closes every MCP connection; run by the shutdown callback
+   └─ [agent.updateTools(tools)]                                gives the LLM the full tool set once the servers are up
 ```
 
 ### Web (`apps/web/app`)

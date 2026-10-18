@@ -10,6 +10,18 @@ type JsonSchemaParameters = Exclude<Parameters<typeof llm.tool>[0]['parameters']
 
 export const DEFAULT_MCP_CONFIG = fileURLToPath(new URL('../../mcp.json', import.meta.url));
 
+/** Turns the tools.config.ts entries into LLM tools that run through runTool. No connections needed. */
+export function wrapCustomTools(customTools: ToolConfig<any>[], publish: Publish, redact?: (text: string) => string) {
+  return customTools.map((tool) =>
+    llm.tool({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      execute: (args) => runTool({ name: tool.name, args, publish, redact, run: () => tool.execute(args) }),
+    }),
+  );
+}
+
 /**
  * Builds every tool the LLM gets: the custom tools from tools.config.ts plus the tools
  * discovered on each MCP server in mcp.json. All of them run through runTool, so each call
@@ -28,14 +40,7 @@ export async function loadTools({
   const redact = createRedactor(secrets);
   const tools: Record<string, llm.FunctionTool<any, any, any>> = {};
 
-  for (const tool of customTools) {
-    tools[tool.name] = llm.tool({
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.parameters,
-      execute: (args) => runTool({ name: tool.name, args, publish, redact, run: () => tool.execute(args) }),
-    });
-  }
+  for (const tool of wrapCustomTools(customTools, publish, redact)) tools[tool.name] = tool;
 
   for (const { server, client, tools: mcpTools } of connections) {
     for (const mcpTool of mcpTools) {

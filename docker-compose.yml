@@ -1,0 +1,39 @@
+# Voice Commander. The agent joins Astronomy Shop's network (opentelemetry-demo) so its
+# MCP servers reach Grafana and OpenSearch by service name. Start Astronomy Shop first.
+name: voice-commander
+
+services:
+  agent:
+    build: .
+    command: pnpm --filter @vic/agent start
+    environment:
+      # Passed through from your shell. There is no .env file.
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      AXIOM_PAT: ${AXIOM_PAT:-}
+      AXIOM_ORG_ID: ${AXIOM_ORG_ID:-}
+      # Astronomy Shop services, by name on its network
+      GRAFANA_URL: http://grafana:3000/grafana
+      OPENSEARCH_URL: http://opensearch:9200
+    networks: [default, astronomy-shop]
+    # Real-time audio: ask for a bigger CPU share than the default 1024 when the
+    # shop's containers (its load generator above all) keep Docker's CPUs busy.
+    cpu_shares: 4096
+    restart: unless-stopped
+
+  web:
+    build: .
+    command: pnpm --filter @vic/web start
+    environment:
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    ports:
+      - '${WEB_PORT:-3000}:3000'
+    restart: unless-stopped
+
+networks:
+  astronomy-shop:
+    external: true
+    name: opentelemetry-demo
