@@ -6,7 +6,8 @@
     "dev": "pnpm --parallel -r dev",
     "dev:web": "pnpm --filter @vic/web dev",
     "dev:agent": "pnpm --filter @vic/agent dev",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
   },
   "devDependencies": {
     "typescript": "~5.9.3"

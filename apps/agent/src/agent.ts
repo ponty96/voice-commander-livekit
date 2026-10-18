@@ -1,11 +1,13 @@
 import { fileURLToPath } from 'node:url';
 import { type JobContext, ServerOptions, cli, defineAgent, inference, voice } from '@livekit/agents';
-import { createActions } from './actions.js';
+import customTools from '../tools.config.js';
+import { createPublisher } from './tools/events.js';
+import { loadTools } from './tools/index.js';
 
 const INSTRUCTIONS = `You are Commander, a voice assistant that helps an on-call engineer investigate production incidents.
 You talk out loud, so keep replies short and conversational, with no markdown, lists or symbols.
 Use your tools to investigate when the engineer asks about a problem.
-Your tools are not connected to real systems yet: they only log the request and return no data.
+Some tools are placeholders that only log the request and return no data.
 When that happens, say plainly which checks you ran and that no data came back. Never make up logs, metrics or deploys.`;
 
 export default defineAgent({
@@ -13,10 +15,11 @@ export default defineAgent({
     await ctx.connect();
     console.log(`[agent] joined room ${ctx.room.name}`);
 
-    const agent = new voice.Agent({
-      instructions: INSTRUCTIONS,
-      tools: createActions(ctx.room),
-    });
+    const { tools, close } = await loadTools({ customTools, publish: createPublisher(ctx.room) });
+    ctx.addShutdownCallback(close);
+    console.log(`[agent] tools: ${tools.map((t) => t.name).join(', ')}`);
+
+    const agent = new voice.Agent({ instructions: INSTRUCTIONS, tools });
 
     const session = new voice.AgentSession({
       stt: new inference.STT({ model: 'deepgram/nova-3', language: 'en' }),
