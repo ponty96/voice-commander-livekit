@@ -37,6 +37,17 @@ To run the agent on your Mac with `pnpm dev` against the same stack, install the
 `apps/web/components/agents-ui` and `hooks/agents-ui` come from the LiveKit Agents UI shadcn registry (`components.json` has it as `@agents-ui`).
 
 
+## System context
+
+The agent always knows what application it's investigating. It reads a Markdown file at startup and puts it in its instructions, after Commander's persona and before the tool knowledge files. Every conversation starts with this context.
+
+- `SYSTEM_CONTEXT_PATH` names the file, relative to `apps/agent`. Docker Compose defaults it to [`context/astronomy-shop.md`](apps/agent/context/astronomy-shop.md). For `pnpm dev`, export it (see `.env.example`). If it's unset, the agent has no system context.
+- To investigate a different application, write a new file in `apps/agent/context/` and point `SYSTEM_CONTEXT_PATH` at it. No code changes. In Docker the folder is mounted read-only, so edits need `docker compose restart agent`, not a rebuild.
+- The file is read once per process at startup. If the path is set but the file is missing or empty, the agent stops with an error instead of running without it.
+- Startup logs `[agent] system context: context/astronomy-shop.md (510 chars)`. To check that the LLM uses it, ask "what does this application do?" on a call. It answers from the file without calling a tool.
+
+Keep this file to what the application is and how its parts fit together. How to use a tool belongs in `skills/`, and runbooks and live data belong behind tools.
+
 ## Tools
 
 The agent gives the LLM two kinds of tools, and both go through the same wrapper, so every call shows up in the call page's activity log:
@@ -174,6 +185,7 @@ How the code calls into itself today, from each entry point down. One line per f
 ### Agent (`apps/agent`)
 
 ```
+loadSystemContext()                     src/instructions.ts     at startup: reads SYSTEM_CONTEXT_PATH (relative to apps/agent); throws if set but missing or empty
 cli.runApp(new ServerOptions(...))      src/agent.ts            registers the worker with LiveKit and waits for rooms
 └─ defineAgent.entry(ctx)               src/agent.ts            runs once per room the agent is sent to
    ├─ [ctx.connect]                                             joins the room
@@ -181,7 +193,8 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    ├─ wrapCustomTools(tools, publish)   src/tools/index.ts      the custom tools as LLM tools, so the call starts without MCP
    │  └─ tools.config.ts (default)      tools.config.ts         custom tools, each made with defineTool()
    │     └─ defineTool(tool)            src/tools/define.ts     keeps Zod types for execute(); returns the tool as-is
-   ├─ new voice.Agent({instructions, tools})                    Commander's persona, starting with the custom tools
+   ├─ buildInstructions(base, ctx)      src/instructions.ts     persona, then system context, then tool knowledge (added later)
+   ├─ new voice.Agent({instructions, tools})                    Commander's persona and system context, starting with the custom tools
    ├─ new voice.AgentSession({stt, llm, tts})                   Deepgram, GPT-4.1 mini, Cartesia via LiveKit Inference
    ├─ session.on(...)                                           logs user transcripts, state changes and replies to the terminal
    ├─ [session.start]                                           starts listening; publishes transcripts and lk.agent.state
@@ -208,7 +221,7 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    │  ├─ knowledgeInstructions(conns)   src/tools/index.ts      turns the knowledge files into "How to use the <server> tools" sections
    │  └─ close()                        src/tools/index.ts      closes every MCP connection; run by the shutdown callback
    ├─ [agent.updateTools(tools)]                                gives the LLM the full tool set once the servers are up
-   └─ [agent.updateInstructions(...)]                           adds the knowledge sections to Commander's instructions
+   └─ [agent.updateInstructions(...)]                           rebuilt with buildInstructions to add the knowledge sections
 ```
 
 ### Web (`apps/web/app`)

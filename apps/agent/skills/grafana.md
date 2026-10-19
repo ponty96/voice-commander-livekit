@@ -1,4 +1,4 @@
-Grafana here is the Astronomy Shop (OpenTelemetry demo) stack. Its datasources, by UID:
+Grafana here monitors Astronomy Shop. Its datasources, by UID:
 
 - `webstore-metrics`: Prometheus (metrics)
 - `webstore-logs`: OpenSearch (logs). Query logs with the opensearch__ tools instead.

@@ -16,6 +16,11 @@ services:
       # Astronomy Shop services, by name on its network
       GRAFANA_URL: http://grafana:3000/grafana
       OPENSEARCH_URL: http://opensearch:9200
+      # What the agent is investigating, relative to apps/agent. Point it at another file to switch apps.
+      SYSTEM_CONTEXT_PATH: ${SYSTEM_CONTEXT_PATH:-context/astronomy-shop.md}
+    volumes:
+      # Edit context files without rebuilding; restart the agent to load them.
+      - ./apps/agent/context:/app/apps/agent/context:ro
     networks: [default, astronomy-shop]
     # Real-time audio: ask for a bigger CPU share than the default 1024 when the
     # shop's containers (its load generator above all) keep Docker's CPUs busy.

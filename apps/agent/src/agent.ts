@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { type JobContext, ServerOptions, cli, defineAgent, inference, voice } from '@livekit/agents';
 import customTools from '../tools.config.js';
+import { buildInstructions, loadSystemContext } from './instructions.js';
 import { createPublisher } from './tools/events.js';
 import { loadTools, wrapCustomTools } from './tools/index.js';
 
@@ -10,6 +11,9 @@ Use your tools to investigate when the engineer asks about a problem.
 Some tools are placeholders that only log the request and return no data.
 When that happens, say plainly which checks you ran and that no data came back. Never make up logs, metrics or deploys.`;
 
+// Read once when the process starts (before the worker registers), so a bad path stops startup.
+const SYSTEM_CONTEXT = loadSystemContext();
+
 export default defineAgent({
   entry: async (ctx: JobContext) => {
     await ctx.connect();
@@ -17,7 +21,10 @@ export default defineAgent({
 
     const publish = createPublisher(ctx.room);
     // Start with the custom tools so the call doesn't wait on MCP servers; theirs are added below.
-    const agent = new voice.Agent({ instructions: INSTRUCTIONS, tools: wrapCustomTools(customTools, publish) });
+    const agent = new voice.Agent({
+      instructions: buildInstructions(INSTRUCTIONS, SYSTEM_CONTEXT),
+      tools: wrapCustomTools(customTools, publish),
+    });
     let closeMcp = async () => {};
     ctx.addShutdownCallback(() => closeMcp());
 
@@ -45,7 +52,7 @@ export default defineAgent({
     const { tools, instructions, close } = await loadTools({ customTools, publish });
     closeMcp = close;
     await agent.updateTools(tools);
-    if (instructions) await agent.updateInstructions(`${INSTRUCTIONS}\n\n${instructions}`);
+    if (instructions) await agent.updateInstructions(buildInstructions(INSTRUCTIONS, SYSTEM_CONTEXT, instructions));
     console.log(`[agent] tools: ${tools.map((t) => t.name).join(', ')}`);
   },
 });
