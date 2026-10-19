@@ -140,15 +140,24 @@ export async function readKnowledge(server: string, mcpConfigPath: string, file:
   }
 }
 
+/** Closes MCP connections, logging (not throwing) any that fail to close. */
+export async function closeConnections(connections: McpServerConnection[]) {
+  const results = await Promise.allSettled(connections.map((c) => c.client.close()));
+  results.forEach((r, i) => {
+    if (r.status === 'rejected') console.error(`[mcp] ${connections[i].server}: close failed: ${r.reason}`);
+  });
+}
+
 /**
  * Reads mcp.json, resolves ${VAR}s from the environment and connects to every server in parallel.
  * A server with missing variables or a failed connection is skipped with a log line, so one bad
- * server never stops the agent. Returns the live connections and the secret values to redact.
+ * server never stops the agent. If anything else fails partway, every connection already opened
+ * is closed before the error is thrown. Returns the live connections and the secret values to redact.
  */
 export async function connectMcpServers(path: string) {
   const { mcpServers } = await readMcpConfig(path);
   const secrets: string[] = [];
-  const results = await Promise.all(
+  const results = await Promise.allSettled(
     Object.entries(mcpServers).map(async ([server, raw]) => {
       const { value: config, missing, secrets: found } = resolveEnv(raw);
       if (missing.length) {
@@ -156,18 +165,30 @@ export async function connectMcpServers(path: string) {
         return null;
       }
       secrets.push(...found);
+      let connection: McpServerConnection;
       try {
-        const connection = await connectMcpServer(server, config);
-        connection.knowledge = await readKnowledge(server, path, config.knowledge_context_file);
-        console.log(
-          `[mcp] ${server}: ${connection.tools.length} tools (${connection.tools.map((t) => t.name).join(', ')})`,
-        );
-        return connection;
+        connection = await connectMcpServer(server, config);
       } catch (err) {
         console.error(`[mcp] skipping ${server}: ${(err as Error).message}`);
         return null;
       }
+      try {
+        connection.knowledge = await readKnowledge(server, path, config.knowledge_context_file);
+      } catch (err) {
+        await closeConnections([connection]);
+        throw err;
+      }
+      console.log(
+        `[mcp] ${server}: ${connection.tools.length} tools (${connection.tools.map((t) => t.name).join(', ')})`,
+      );
+      return connection;
     }),
   );
-  return { connections: results.filter((c): c is McpServerConnection => c !== null), secrets };
+  const connections = results.flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []));
+  const failure = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failure) {
+    await closeConnections(connections);
+    throw failure.reason;
+  }
+  return { connections, secrets };
 }

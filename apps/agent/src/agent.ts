@@ -3,7 +3,7 @@ import { type JobContext, ServerOptions, cli, defineAgent, inference, voice } fr
 import customTools from '../tools.config.js';
 import { buildInstructions, loadSystemContext } from './instructions.js';
 import { createPublisher } from './tools/events.js';
-import { customToolKnowledge, loadTools, wrapCustomTools } from './tools/index.js';
+import { customToolKnowledge, loadTools, wrapCustomTool } from './tools/index.js';
 
 const INSTRUCTIONS = `You are Commander, a voice assistant that helps an on-call engineer investigate production incidents.
 You talk out loud, so keep replies short and conversational, with no markdown, lists or symbols.
@@ -14,6 +14,8 @@ When that happens, say plainly which checks you ran and that no data came back. 
 // Read once when the process starts (before the worker registers), so a bad path stops startup.
 const SYSTEM_CONTEXT = loadSystemContext();
 const CUSTOM_TOOL_KNOWLEDGE = customToolKnowledge(customTools);
+const duplicate = customTools.find((t, i) => customTools.findIndex((u) => u.name === t.name) !== i);
+if (duplicate) throw new Error(`Duplicate tool name "${duplicate.name}" in tools.config.ts`);
 
 export default defineAgent({
   entry: async (ctx: JobContext) => {
@@ -24,10 +26,15 @@ export default defineAgent({
     // Start with the custom tools so the call doesn't wait on MCP servers; theirs are added below.
     const agent = new voice.Agent({
       instructions: buildInstructions(INSTRUCTIONS, SYSTEM_CONTEXT, CUSTOM_TOOL_KNOWLEDGE),
-      tools: wrapCustomTools(customTools, publish),
+      tools: customTools.map((tool) => wrapCustomTool(tool, publish)),
     });
+    // Close MCP connections when the call ends, including when it ends before they finish loading.
+    let ended = false;
     let closeMcp = async () => {};
-    ctx.addShutdownCallback(() => closeMcp());
+    ctx.addShutdownCallback(async () => {
+      ended = true;
+      await closeMcp();
+    });
 
     const session = new voice.AgentSession({
       stt: new inference.STT({ model: 'deepgram/nova-3', language: 'en' }),
@@ -47,17 +54,29 @@ export default defineAgent({
       }
     });
 
+    // When the session closes (for example the caller hangs up), end the job so its shutdown
+    // callbacks run and the MCP servers stop. Otherwise they live until LiveKit ends the room.
+    session.on(voice.AgentSessionEventTypes.Close, (ev) => ctx.shutdown(`session closed: ${ev.reason}`));
+
     await session.start({ agent, room: ctx.room });
     session.say("Commander here. What's going on?");
 
-    const { tools, instructions, close } = await loadTools({ customTools, publish });
-    closeMcp = close;
-    await agent.updateTools(tools);
-    if (instructions) {
-      const knowledge = [CUSTOM_TOOL_KNOWLEDGE, instructions].filter(Boolean).join('\n\n');
+    let loaded: Awaited<ReturnType<typeof loadTools>>;
+    try {
+      loaded = await loadTools({ customTools, publish });
+    } catch (err) {
+      // loadTools has already closed its connections. The call carries on with the custom tools.
+      console.error(`[agent] MCP tools not loaded: ${(err as Error).message}`);
+      return;
+    }
+    if (ended) return loaded.close();
+    closeMcp = loaded.close;
+    await agent.updateTools(loaded.tools);
+    if (loaded.instructions) {
+      const knowledge = [CUSTOM_TOOL_KNOWLEDGE, loaded.instructions].filter(Boolean).join('\n\n');
       await agent.updateInstructions(buildInstructions(INSTRUCTIONS, SYSTEM_CONTEXT, knowledge));
     }
-    console.log(`[agent] tools: ${tools.map((t) => t.name).join(', ')}`);
+    console.log(`[agent] tools: ${loaded.tools.map((t) => t.name).join(', ')}`);
   },
 });
 

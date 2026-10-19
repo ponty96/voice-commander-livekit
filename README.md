@@ -200,13 +200,14 @@ How the code calls into itself today, from each entry point down. One line per f
 ```
 loadSystemContext()                     src/instructions.ts     at startup: reads SYSTEM_CONTEXT_PATH (relative to apps/agent); throws if set but missing or empty
 customToolKnowledge(customTools)        src/tools/index.ts      at startup: reads each custom tool's knowledgeFile into an instructions section
+(startup check)                         src/agent.ts            a duplicate name in tools.config.ts stops startup
 cli.runApp(new ServerOptions(...))      src/agent.ts            registers the worker with LiveKit and waits for rooms
 └─ defineAgent.entry(ctx)               src/agent.ts            runs once per room the agent is sent to
    ├─ [ctx.connect]                                             joins the room
    ├─ createPublisher(room)             src/tools/events.ts     sends StepEvents on vic.steps; never throws
-   ├─ wrapCustomTools(tools, publish)   src/tools/index.ts      the custom tools as LLM tools, so the call starts without MCP
+   ├─ wrapCustomTool(tool, publish)     src/tools/index.ts      each custom tool as an LLM tool, so the call starts without MCP
    │  └─ tools.config.ts (default)      tools.config.ts         custom tools, each made with defineTool()
-   │     ├─ defineTool(tool)            src/tools/define.ts     keeps Zod types for execute(); returns the tool as-is
+   │     ├─ defineTool(tool)            src/tools/define.ts     keeps Zod types while writing execute(); erases them for the list
    │     ├─ listTraceOperations(svc?)   src/integrations/jaeger.ts  services, or one service's operations by span kind
    │     ├─ searchTraces(input)         src/integrations/jaeger.ts  GET /api/v3/traces, then summarizeTraces
    │     │  ├─ parseSpans(body)         src/integrations/jaeger.ts  OTLP JSON to flat spans (service, kind, duration, error)
@@ -216,21 +217,23 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    ├─ new voice.Agent({instructions, tools})                    Commander's persona and system context, starting with the custom tools
    ├─ new voice.AgentSession({stt, llm, tts})                   Deepgram, GPT-4.1 mini, Cartesia via LiveKit Inference
    ├─ session.on(...)                                           logs user transcripts, state changes and replies to the terminal
+   ├─ session.on(Close) → [ctx.shutdown]                        ends the job when the session closes, so shutdown callbacks run
    ├─ [session.start]                                           starts listening; publishes transcripts and lk.agent.state
    ├─ [session.say]                                             speaks the greeting
    ├─ loadTools({customTools, publish}) src/tools/index.ts      after the greeting: custom tools plus every MCP server's tools
-   │  ├─ wrapCustomTools(...)           src/tools/index.ts      as above, now with credentials redacted
+   │  ├─ wrapCustomTool(...)            src/tools/index.ts      as above, now with credentials redacted
    │  ├─ connectMcpServers(path)        src/tools/mcp.ts        reads mcp.json and connects to every server in parallel
    │  │  ├─ readMcpConfig(path)         src/tools/mcp.ts        parses mcp.json; no file means no servers
    │  │  ├─ resolveEnv(config)          src/tools/mcp.ts        fills ${VAR}s from the environment; skips servers missing any
    │  │  ├─ connectMcpServer(name, cfg) src/tools/mcp.ts        connects over stdio or HTTP and pages through tools/list
    │  │  │  ├─ createTransport(cfg)     src/tools/mcp.ts        StdioClientTransport (keeps PATH) or StreamableHTTPClientTransport
    │  │  │  └─ withTimeout(p, ms)       src/tools/mcp.ts        gives up on a server after 60s
-   │  │  └─ readKnowledge(name, file)   src/tools/mcp.ts        reads the server's knowledge_context_file; a missing file is only logged
+   │  │  ├─ readKnowledge(name, file)   src/tools/mcp.ts        reads the server's knowledge_context_file; a missing file is only logged
+   │  │  └─ closeConnections(conns)     src/tools/mcp.ts        if anything fails partway, closes what was opened, then throws
    │  ├─ createRedactor(secrets)        src/tools/events.ts     replaces resolved credentials with ***
-   │  ├─ mcpToolName(server, tool)      src/tools/mcp.ts        "<server>__<tool>", safe for the LLM
-   │  ├─ [llm.tool] per tool                                    registers it; execute() calls runTool
-   │  │  └─ runTool({name, args, run})  src/tools/events.ts     shared wrapper for custom and MCP tools
+   │  ├─ wrapMcpTool(server, client, t) src/tools/index.ts      each MCP tool as an LLM tool; execute() calls runTool
+   │  │  ├─ mcpToolName(server, tool)   src/tools/mcp.ts        "<server>__<tool>", safe for the LLM
+   │  │  └─ runTool({name, args, run})  src/tools/events.ts     shared wrapper for custom and MCP tools (both kinds)
    │  │     ├─ formatInput(args)        src/tools/events.ts     arguments as "key=value" text
    │  │     ├─ publish(tool_start)
    │  │     ├─ run()                                            custom: tool.execute(args); MCP: [client.callTool] then callResultToText
@@ -238,7 +241,9 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    │  │     ├─ formatOutput(value)      src/tools/events.ts     strings as-is, anything else as JSON
    │  │     └─ publish(tool_end)                                same id, error: true if run() threw
    │  ├─ knowledgeInstructions(conns)   src/tools/index.ts      turns the knowledge files into "How to use the <server> tools" sections
-   │  └─ close()                        src/tools/index.ts      closes every MCP connection; run by the shutdown callback
+   │  ├─ (duplicate names)                                      throw; loadTools closes its connections first
+   │  └─ close() → closeConnections     src/tools/mcp.ts        closes every MCP connection, logging any that fail; run at shutdown
+   ├─ (loadTools fails)                                         logged; the call carries on with the custom tools
    ├─ [agent.updateTools(tools)]                                gives the LLM the full tool set once the servers are up
    └─ [agent.updateInstructions(...)]                           rebuilt with buildInstructions to add the knowledge sections
 ```

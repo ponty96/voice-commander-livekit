@@ -54,7 +54,8 @@ async function setup(mcpServers: object, files: Record<string, string> = {}) {
   const call = (name: string, args: object) => {
     const tool = loaded.tools.find((t) => t.name === name);
     assert.ok(tool, `tool ${name} is registered`);
-    return tool.execute(args, {} as never) as Promise<string>;
+    // The registered tools have mixed argument types; the test passes plain objects.
+    return (tool.execute as (a: object, o: never) => Promise<string>)(args, {} as never);
   };
   return { ...loaded, events, call };
 }
@@ -151,4 +152,24 @@ test("adds each server's knowledge_context_file to the instructions, and skips a
   } finally {
     await close();
   }
+});
+
+test('a duplicate tool name throws, and the MCP connections are closed', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vic-mcp-'));
+  const mcpConfigPath = join(dir, 'mcp.json');
+  await writeFile(
+    mcpConfigPath,
+    JSON.stringify({ mcpServers: { local: { command: process.execPath, args: [FIXTURE] } } }),
+  );
+  const clash = defineTool({
+    name: 'local__echo',
+    description: 'Clashes with the MCP tool',
+    parameters: z.object({}),
+    execute: () => '',
+  });
+  await assert.rejects(
+    loadTools({ customTools: [clash], publish: async () => {}, mcpConfigPath }),
+    /Duplicate tool name "local__echo" \(from MCP server local\)/,
+  );
+  // If the stdio server were left open, this test file would never exit.
 });
