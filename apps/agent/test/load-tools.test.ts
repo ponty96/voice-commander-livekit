@@ -34,8 +34,9 @@ before(async () => {
 });
 after(() => httpServer.close());
 
-async function setup(mcpServers: object) {
+async function setup(mcpServers: object, files: Record<string, string> = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'vic-mcp-'));
+  for (const [name, text] of Object.entries(files)) await writeFile(join(dir, name), text);
   const mcpConfigPath = join(dir, 'mcp.json');
   await writeFile(mcpConfigPath, JSON.stringify({ mcpServers }));
   const events: StepEvent[] = [];
@@ -74,11 +75,9 @@ test('registers custom tools and discovers stdio and HTTP MCP tools, skipping se
       'local__echo',
       'local__fail',
       'local__leak_secret',
-      'query_metrics',
       'remote__echo',
       'remote__fail',
       'remote__leak_secret',
-      'search_logs',
     ]);
   } finally {
     await close();
@@ -94,10 +93,7 @@ test('custom and MCP tools run through the same tool_start / tool_end events', a
   });
   try {
     assert.equal(await call('add', { a: 2, b: 3 }), '5');
-    assert.match(
-      await call('search_logs', { service: 'checkout', level: null, since: '15m', query: null }),
-      /not connected/,
-    );
+    assert.match(await call('list_deploys', { service: 'checkout', since: '1h' }), /not connected/);
     assert.equal(await call('local__echo', { text: 'hi' }), 'echo: hi');
     assert.equal(await call('remote__echo', { text: 'there' }), 'echo: there');
     await assert.rejects(call('remote__fail', {}), /upstream is down/);
@@ -112,7 +108,7 @@ test('custom and MCP tools run through the same tool_start / tool_end events', a
     );
     assert.deepEqual(
       starts.map((s) => s.type === 'tool_start' && s.name),
-      ['add', 'search_logs', 'local__echo', 'remote__echo', 'remote__fail', 'local__leak_secret'],
+      ['add', 'list_deploys', 'local__echo', 'remote__echo', 'remote__fail', 'local__leak_secret'],
     );
     assert.deepEqual(
       ends.map((e) => e.type === 'tool_end' && [e.output, e.error]),
@@ -127,6 +123,28 @@ test('custom and MCP tools run through the same tool_start / tool_end events', a
     );
     // The bearer token never shows up in any event.
     assert.ok(!JSON.stringify(events).includes(TOKEN));
+  } finally {
+    await close();
+  }
+});
+
+test("adds each server's knowledge_context_file to the instructions, and skips a missing file", async () => {
+  process.env.TEST_MCP_TOKEN = TOKEN;
+  const { tools, instructions, close } = await setup(
+    {
+      local: { command: process.execPath, args: [FIXTURE], knowledge_context_file: 'local.md' },
+      remote: {
+        url: httpUrl,
+        headers: { Authorization: 'Bearer ${TEST_MCP_TOKEN}' },
+        knowledge_context_file: 'missing.md',
+      },
+    },
+    { 'local.md': 'Echo is for testing.\n' },
+  );
+  try {
+    assert.equal(instructions, '## How to use the local tools (named local__...)\n\nEcho is for testing.');
+    // A missing knowledge file does not drop the server.
+    assert.ok(tools.some((t) => t.name === 'remote__echo'));
   } finally {
     await close();
   }

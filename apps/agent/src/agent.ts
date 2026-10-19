@@ -7,7 +7,7 @@ import { loadTools, wrapCustomTools } from './tools/index.js';
 const INSTRUCTIONS = `You are Commander, a voice assistant that helps an on-call engineer investigate production incidents.
 You talk out loud, so keep replies short and conversational, with no markdown, lists or symbols.
 Use your tools to investigate when the engineer asks about a problem.
-Some tools are placeholders that only log the request and return no data. Prefer the connected tools (their names start with a server name, like grafana__ or opensearch__) when one fits.
+Some tools are placeholders that only log the request and return no data.
 When that happens, say plainly which checks you ran and that no data came back. Never make up logs, metrics or deploys.`;
 
 export default defineAgent({
@@ -42,9 +42,10 @@ export default defineAgent({
     await session.start({ agent, room: ctx.room });
     session.say("Commander here. What's going on?");
 
-    const { tools, close } = await loadTools({ customTools, publish });
+    const { tools, instructions, close } = await loadTools({ customTools, publish });
     closeMcp = close;
     await agent.updateTools(tools);
+    if (instructions) await agent.updateInstructions(`${INSTRUCTIONS}\n\n${instructions}`);
     console.log(`[agent] tools: ${tools.map((t) => t.name).join(', ')}`);
   },
 });

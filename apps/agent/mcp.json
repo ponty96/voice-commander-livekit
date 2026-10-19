@@ -2,6 +2,7 @@
   "mcpServers": {
     "grafana": {
       "command": "mcp-grafana",
+      "knowledge_context_file": "skills/grafana.md",
       "args": ["--disable-write"],
       "env": {
         "GRAFANA_URL": "${GRAFANA_URL}"
@@ -9,6 +10,7 @@
     },
     "opensearch": {
       "command": "opensearch-mcp-server-py",
+      "knowledge_context_file": "skills/opensearch.md",
       "env": {
         "OPENSEARCH_URL": "${OPENSEARCH_URL}",
         "OPENSEARCH_NO_AUTH": "true"

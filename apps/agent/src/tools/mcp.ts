@@ -1,13 +1,18 @@
 import { readFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 
-/** One entry under "mcpServers" in mcp.json: a local stdio server or a remote HTTP one. */
-export type McpServerConfig =
+/**
+ * One entry under "mcpServers" in mcp.json: a local stdio server or a remote HTTP one.
+ * `knowledge_context_file` is a Markdown file (relative to mcp.json) telling the LLM how to use its tools.
+ */
+export type McpServerConfig = { knowledge_context_file?: string } & (
   | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
-  | { url: string; headers?: Record<string, string> };
+  | { url: string; headers?: Record<string, string> }
+);
 
 export interface McpConfig {
   mcpServers: Record<string, McpServerConfig>;
@@ -17,6 +22,8 @@ export interface McpServerConnection {
   server: string;
   client: Client;
   tools: Tool[];
+  /** Contents of the server's knowledge_context_file, if it has one. */
+  knowledge?: string;
 }
 
 // Python servers can take 30s+ to start when Docker's CPUs are busy. The call doesn't wait on this.
@@ -119,6 +126,20 @@ export function callResultToText(result: CallToolResult) {
   return text;
 }
 
+/** Reads a server's knowledge_context_file, relative to mcp.json. A missing file is logged, not fatal. */
+export async function readKnowledge(server: string, mcpConfigPath: string, file: string | undefined) {
+  if (!file) return undefined;
+  const fullPath = resolve(dirname(mcpConfigPath), file);
+  try {
+    const text = (await readFile(fullPath, 'utf8')).trim();
+    console.log(`[mcp] ${server}: loaded knowledge from ${file}`);
+    return text;
+  } catch (err) {
+    console.warn(`[mcp] ${server}: could not read knowledge_context_file ${file}: ${(err as Error).message}`);
+    return undefined;
+  }
+}
+
 /**
  * Reads mcp.json, resolves ${VAR}s from the environment and connects to every server in parallel.
  * A server with missing variables or a failed connection is skipped with a log line, so one bad
@@ -137,6 +158,7 @@ export async function connectMcpServers(path: string) {
       secrets.push(...found);
       try {
         const connection = await connectMcpServer(server, config);
+        connection.knowledge = await readKnowledge(server, path, config.knowledge_context_file);
         console.log(
           `[mcp] ${server}: ${connection.tools.length} tools (${connection.tools.map((t) => t.name).join(', ')})`,
         );

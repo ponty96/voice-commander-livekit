@@ -73,7 +73,7 @@ defineTool({
 }),
 ```
 
-The three built-in tools (`search_logs`, `query_metrics`, `list_deploys`) are placeholders that return "not connected" until you replace their `execute`.
+`list_deploys` is a template: a placeholder that only logs and returns "not connected". Copy it as a starting point, or replace its `execute` with a real call.
 
 ### Add an MCP server
 
@@ -115,6 +115,20 @@ Add it under `mcpServers` in [`apps/agent/mcp.json`](apps/agent/mcp.json), in th
 
 All three are in `mcp.json`, and each one stays skipped until its variables are set. OAuth-only servers aren't supported yet, and neither is the older SSE transport.
 
+### Teach the LLM how to use a server's tools
+
+MCP tools describe their parameters but not your data, so the LLM ends up guessing metric names, index names and datasource IDs. To prevent that, write what it needs to know in a Markdown file under [`apps/agent/skills/`](apps/agent/skills) and point the server at it with `knowledge_context_file`. The path is relative to `mcp.json`.
+
+```json
+"grafana": {
+  "command": "mcp-grafana",
+  "knowledge_context_file": "skills/grafana.md",
+  ...
+}
+```
+
+Once a server connects, the agent adds its file to the LLM's instructions under "How to use the grafana tools". A file that's missing is logged (`[mcp] grafana: could not read knowledge_context_file ...`), and the server still loads. Good things to put in the file are the IDs and names to use (datasource UIDs, index patterns, field names), two or three working queries, and the mistakes to avoid. [`skills/grafana.md`](apps/agent/skills/grafana.md) and [`skills/opensearch.md`](apps/agent/skills/opensearch.md) cover the Astronomy Shop stack. Keep them short, because the LLM reads them on every turn.
+
 ### Credentials
 
 `${VAR}` anywhere in a server's `command`, `args`, `env`, `url` or `headers` is replaced with that environment variable. Nothing is read from files, so export the variables in the shell that runs the agent, the same way as the LiveKit ones (`.env.example` lists them):
@@ -136,7 +150,8 @@ Start a call (`pnpm dev`, then Join). The agent terminal prints one line per MCP
 [mcp] grafana: 62 tools (alerting_manage_routing, ..., search_dashboards, ...)
 [mcp] opensearch: 9 tools (ListIndexTool, IndexMappingTool, SearchIndexTool, ...)
 [mcp] skipping axiom: set AXIOM_PAT, AXIOM_ORG_ID to enable it
-[agent] tools: search_logs, query_metrics, list_deploys, grafana__search_dashboards, ...
+[mcp] grafana: loaded knowledge from skills/grafana.md
+[agent] tools: list_deploys, grafana__search_dashboards, ...
 ```
 
 `pnpm test` runs the agent tests. They start a local stdio MCP server and an HTTP MCP server and check discovery, calls, errors and the events.
@@ -176,9 +191,10 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    │  ├─ connectMcpServers(path)        src/tools/mcp.ts        reads mcp.json and connects to every server in parallel
    │  │  ├─ readMcpConfig(path)         src/tools/mcp.ts        parses mcp.json; no file means no servers
    │  │  ├─ resolveEnv(config)          src/tools/mcp.ts        fills ${VAR}s from the environment; skips servers missing any
-   │  │  └─ connectMcpServer(name, cfg) src/tools/mcp.ts        connects over stdio or HTTP and pages through tools/list
-   │  │     ├─ createTransport(cfg)     src/tools/mcp.ts        StdioClientTransport (keeps PATH) or StreamableHTTPClientTransport
-   │  │     └─ withTimeout(p, ms)       src/tools/mcp.ts        gives up on a server after 60s
+   │  │  ├─ connectMcpServer(name, cfg) src/tools/mcp.ts        connects over stdio or HTTP and pages through tools/list
+   │  │  │  ├─ createTransport(cfg)     src/tools/mcp.ts        StdioClientTransport (keeps PATH) or StreamableHTTPClientTransport
+   │  │  │  └─ withTimeout(p, ms)       src/tools/mcp.ts        gives up on a server after 60s
+   │  │  └─ readKnowledge(name, file)   src/tools/mcp.ts        reads the server's knowledge_context_file; a missing file is only logged
    │  ├─ createRedactor(secrets)        src/tools/events.ts     replaces resolved credentials with ***
    │  ├─ mcpToolName(server, tool)      src/tools/mcp.ts        "<server>__<tool>", safe for the LLM
    │  ├─ [llm.tool] per tool                                    registers it; execute() calls runTool
@@ -189,8 +205,10 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    │  │     │  └─ callResultToText(res) src/tools/mcp.ts        joins the text content; throws if isError
    │  │     ├─ formatOutput(value)      src/tools/events.ts     strings as-is, anything else as JSON
    │  │     └─ publish(tool_end)                                same id, error: true if run() threw
+   │  ├─ knowledgeInstructions(conns)   src/tools/index.ts      turns the knowledge files into "How to use the <server> tools" sections
    │  └─ close()                        src/tools/index.ts      closes every MCP connection; run by the shutdown callback
-   └─ [agent.updateTools(tools)]                                gives the LLM the full tool set once the servers are up
+   ├─ [agent.updateTools(tools)]                                gives the LLM the full tool set once the servers are up
+   └─ [agent.updateInstructions(...)]                           adds the knowledge sections to Commander's instructions
 ```
 
 ### Web (`apps/web/app`)

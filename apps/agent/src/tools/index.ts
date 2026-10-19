@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { llm } from '@livekit/agents';
 import type { ToolConfig } from './define.js';
 import { type Publish, createRedactor, runTool } from './events.js';
-import { callResultToText, connectMcpServers, mcpToolName } from './mcp.js';
+import { type McpServerConnection, callResultToText, connectMcpServers, mcpToolName } from './mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 /** The raw JSON Schema form llm.tool() accepts for parameters (MCP tools describe inputs this way). */
@@ -22,10 +22,19 @@ export function wrapCustomTools(customTools: ToolConfig<any>[], publish: Publish
   );
 }
 
+/** Turns each connected server's knowledge_context_file into a section to add to the agent's instructions. */
+export function knowledgeInstructions(connections: McpServerConnection[]) {
+  return connections
+    .filter((c) => c.knowledge)
+    .map((c) => `## How to use the ${c.server} tools (named ${c.server}__...)\n\n${c.knowledge}`)
+    .join('\n\n');
+}
+
 /**
  * Builds every tool the LLM gets: the custom tools from tools.config.ts plus the tools
  * discovered on each MCP server in mcp.json. All of them run through runTool, so each call
- * publishes tool_start and tool_end. Call close() when the session ends.
+ * publishes tool_start and tool_end. `instructions` holds the servers' knowledge files for the
+ * agent's instructions. Call close() when the session ends.
  */
 export async function loadTools({
   customTools,
@@ -74,5 +83,5 @@ export async function loadTools({
   const close = async () => {
     await Promise.all(connections.map((c) => c.client.close().catch(() => {})));
   };
-  return { tools: Object.values(tools), close };
+  return { tools: Object.values(tools), instructions: knowledgeInstructions(connections), close };
 }
