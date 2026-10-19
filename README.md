@@ -15,7 +15,7 @@ pnpm monorepo:
 
 ## Run in Docker, connected to Astronomy Shop
 
-`docker-compose.yml` runs the agent and the web app. The agent also joins Astronomy Shop's `opentelemetry-demo` network, so its MCP servers reach `http://grafana:3000/grafana` and `http://opensearch:9200` by service name. There are no host ports to track, and Astronomy Shop is unchanged.
+`docker-compose.yml` runs the agent and the web app. The agent also joins Astronomy Shop's `opentelemetry-demo` network, so its tools reach `http://grafana:3000/grafana`, `http://opensearch:9200` and Jaeger at `http://jaeger:16686/jaeger/ui` by service name. There are no host ports to track, and Astronomy Shop is unchanged.
 
 1. Start Astronomy Shop first, because its network has to exist.
 2. Export the LiveKit variables (and the Axiom ones if you use it) in your shell. Compose passes them through, and there is no `.env` file.
@@ -85,6 +85,18 @@ defineTool({
 ```
 
 `list_deploys` is a template: a placeholder that only logs and returns "not connected". Copy it as a starting point, or replace its `execute` with a real call.
+
+A custom tool can also set `knowledgeFile: 'skills/<name>.md'` (relative to `apps/agent`). That file is added to the LLM's instructions, the same way `knowledge_context_file` works for MCP servers. Tools that share a file share one section.
+
+### Traces (Jaeger)
+
+Three custom tools read traces from Jaeger at `JAEGER_URL`. Docker Compose sets it, and for `pnpm dev` see `.env.example`. The tools live in [`src/integrations/jaeger.ts`](apps/agent/src/integrations/jaeger.ts) and use Jaeger's v3 API:
+
+- `list_trace_operations`: lists the services that send traces, or one service's operations grouped by span kind (server, client, producer, internal).
+- `search_traces`: finds recent traces for a service. You can filter by operation, errors only, exact attributes or minimum duration. The result starts with a tally of attribute values across the traces (products, users, amounts and so on), then summarizes each trace: services, errors grouped by message, and business attributes.
+- `get_trace`: shows one trace as an indented span tree.
+
+They return short text, not raw spans, and transport attributes (`http.*`, `rpc.*` and similar) are left out. [`skills/jaeger.md`](apps/agent/skills/jaeger.md) tells the LLM to discover services and operations first, and how to find the failing span that started an error.
 
 ### Add an MCP server
 
@@ -162,7 +174,8 @@ Start a call (`pnpm dev`, then Join). The agent terminal prints one line per MCP
 [mcp] opensearch: 9 tools (ListIndexTool, IndexMappingTool, SearchIndexTool, ...)
 [mcp] skipping axiom: set AXIOM_PAT, AXIOM_ORG_ID to enable it
 [mcp] grafana: loaded knowledge from skills/grafana.md
-[agent] tools: list_deploys, grafana__search_dashboards, ...
+[tools] loaded knowledge for list_trace_operations, search_traces, get_trace from skills/jaeger.md
+[agent] tools: list_deploys, list_trace_operations, search_traces, get_trace, grafana__search_dashboards, ...
 ```
 
 `pnpm test` runs the agent tests. They start a local stdio MCP server and an HTTP MCP server and check discovery, calls, errors and the events.
@@ -186,14 +199,20 @@ How the code calls into itself today, from each entry point down. One line per f
 
 ```
 loadSystemContext()                     src/instructions.ts     at startup: reads SYSTEM_CONTEXT_PATH (relative to apps/agent); throws if set but missing or empty
+customToolKnowledge(customTools)        src/tools/index.ts      at startup: reads each custom tool's knowledgeFile into an instructions section
 cli.runApp(new ServerOptions(...))      src/agent.ts            registers the worker with LiveKit and waits for rooms
 └─ defineAgent.entry(ctx)               src/agent.ts            runs once per room the agent is sent to
    ├─ [ctx.connect]                                             joins the room
    ├─ createPublisher(room)             src/tools/events.ts     sends StepEvents on vic.steps; never throws
    ├─ wrapCustomTools(tools, publish)   src/tools/index.ts      the custom tools as LLM tools, so the call starts without MCP
    │  └─ tools.config.ts (default)      tools.config.ts         custom tools, each made with defineTool()
-   │     └─ defineTool(tool)            src/tools/define.ts     keeps Zod types for execute(); returns the tool as-is
-   ├─ buildInstructions(base, ctx)      src/instructions.ts     persona, then system context, then tool knowledge (added later)
+   │     ├─ defineTool(tool)            src/tools/define.ts     keeps Zod types for execute(); returns the tool as-is
+   │     ├─ listTraceOperations(svc?)   src/integrations/jaeger.ts  services, or one service's operations by span kind
+   │     ├─ searchTraces(input)         src/integrations/jaeger.ts  GET /api/v3/traces, then summarizeTraces
+   │     │  ├─ parseSpans(body)         src/integrations/jaeger.ts  OTLP JSON to flat spans (service, kind, duration, error)
+   │     │  └─ summarizeTraces(spans)   src/integrations/jaeger.ts  attribute tally, then one entry per trace
+   │     └─ getTrace(traceId)           src/integrations/jaeger.ts  GET /api/v3/traces/{id}, then summarizeTrace (span tree)
+   ├─ buildInstructions(base, ctx, k)   src/instructions.ts     persona, system context, custom tool knowledge (MCP knowledge added later)
    ├─ new voice.Agent({instructions, tools})                    Commander's persona and system context, starting with the custom tools
    ├─ new voice.AgentSession({stt, llm, tts})                   Deepgram, GPT-4.1 mini, Cartesia via LiveKit Inference
    ├─ session.on(...)                                           logs user transcripts, state changes and replies to the terminal

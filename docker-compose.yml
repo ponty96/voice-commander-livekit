@@ -16,6 +16,7 @@ services:
       # Astronomy Shop services, by name on its network
       GRAFANA_URL: http://grafana:3000/grafana
       OPENSEARCH_URL: http://opensearch:9200
+      JAEGER_URL: http://jaeger:16686/jaeger/ui
       # What the agent is investigating, relative to apps/agent. Point it at another file to switch apps.
       SYSTEM_CONTEXT_PATH: ${SYSTEM_CONTEXT_PATH:-context/astronomy-shop.md}
     volumes:

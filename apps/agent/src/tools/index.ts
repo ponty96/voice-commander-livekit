@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { llm } from '@livekit/agents';
 import type { ToolConfig } from './define.js';
@@ -9,6 +11,26 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 type JsonSchemaParameters = Exclude<Parameters<typeof llm.tool>[0]['parameters'], undefined>;
 
 export const DEFAULT_MCP_CONFIG = fileURLToPath(new URL('../../mcp.json', import.meta.url));
+const AGENT_DIR = fileURLToPath(new URL('../..', import.meta.url));
+
+/** Reads the custom tools' knowledge files into instruction sections. A missing file is logged, not fatal. */
+export function customToolKnowledge(customTools: ToolConfig<any>[], baseDir = AGENT_DIR) {
+  const byFile = new Map<string, string[]>();
+  for (const tool of customTools) {
+    if (tool.knowledgeFile) byFile.set(tool.knowledgeFile, [...(byFile.get(tool.knowledgeFile) ?? []), tool.name]);
+  }
+  const sections: string[] = [];
+  for (const [file, names] of byFile) {
+    try {
+      const text = readFileSync(resolve(baseDir, file), 'utf8').trim();
+      sections.push(`## How to use ${names.join(', ')}\n\n${text}`);
+      console.log(`[tools] loaded knowledge for ${names.join(', ')} from ${file}`);
+    } catch (err) {
+      console.warn(`[tools] could not read knowledgeFile ${file}: ${(err as Error).message}`);
+    }
+  }
+  return sections.join('\n\n');
+}
 
 /** Turns the tools.config.ts entries into LLM tools that run through runTool. No connections needed. */
 export function wrapCustomTools(customTools: ToolConfig<any>[], publish: Publish, redact?: (text: string) => string) {

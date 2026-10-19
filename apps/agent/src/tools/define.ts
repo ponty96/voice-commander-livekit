@@ -7,6 +7,11 @@ export interface ToolConfig<S extends z.ZodObject = z.ZodObject> {
   parameters: S;
   /** Whatever it returns is sent to the LLM (strings as-is, anything else as JSON). Throw to report a failure. */
   execute: (args: z.infer<S>) => unknown | Promise<unknown>;
+  /**
+   * Optional Markdown file, relative to apps/agent (for example `skills/jaeger.md`), that tells the
+   * LLM how to use this tool. It's added to the agent's instructions. Tools that share a file share one section.
+   */
+  knowledgeFile?: string;
 }
 
 /** Identity helper that keeps the Zod type inference for `execute`. */

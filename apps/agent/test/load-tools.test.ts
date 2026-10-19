@@ -71,13 +71,16 @@ test('registers custom tools and discovers stdio and HTTP MCP tools, skipping se
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
       'add',
+      'get_trace',
       'list_deploys',
+      'list_trace_operations',
       'local__echo',
       'local__fail',
       'local__leak_secret',
       'remote__echo',
       'remote__fail',
       'remote__leak_secret',
+      'search_traces',
     ]);
   } finally {
     await close();
