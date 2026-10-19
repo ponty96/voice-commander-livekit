@@ -42,7 +42,7 @@ To run the agent on your Mac with `pnpm dev` against the same stack, install the
 The agent always knows what application it's investigating. It reads a Markdown file at startup and puts it in its instructions, after Commander's persona and before the tool knowledge files. Every conversation starts with this context.
 
 - `SYSTEM_CONTEXT_PATH` names the file, relative to `apps/agent`. Docker Compose defaults it to [`context/astronomy-shop.md`](apps/agent/context/astronomy-shop.md). For `pnpm dev`, export it (see `.env.example`). If it's unset, the agent has no system context.
-- To investigate a different application, write a new file in `apps/agent/context/` and point `SYSTEM_CONTEXT_PATH` at it. No code changes. In Docker the folder is mounted read-only, so edits need `docker compose restart agent`, not a rebuild.
+- To investigate a different application, write a new file in `apps/agent/context/` and point `SYSTEM_CONTEXT_PATH` at it. No code changes. In Docker, `context/` and `skills/` are mounted read-only, so edits need `docker compose restart agent`, not a rebuild.
 - The file is read once per process at startup. If the path is set but the file is missing or empty, the agent stops with an error instead of running without it.
 - Startup logs `[agent] system context: context/astronomy-shop.md (510 chars)`. To check that the LLM uses it, ask "what does this application do?" on a call. It answers from the file without calling a tool.
 

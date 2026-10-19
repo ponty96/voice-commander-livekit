@@ -1,16 +1,32 @@
-Application logs from the Astronomy Shop services are in the indices `otel-logs-*`, one index per day (for example `otel-logs-2026-10-19`). Always query `otel-logs-*` and never guess other index names.
+Application logs from the Astronomy Shop services are in the indices `otel-logs-*`, one index per day (for example `otel-logs-2026-10-19`). Always query `otel-logs-*`. Never guess other index names.
 
-Useful fields:
+## Request shapes (these matter)
 
-- `@timestamp` (date). Ranges need a format: `{"range": {"@timestamp": {"gte": "now-15m", "format": "strict_date_optional_time||epoch_millis"}}}`
-- `resource.service.name` (text). Use `resource.service.name.keyword` for exact matches and aggregations, for example `{"term": {"resource.service.name.keyword": "checkout"}}`
-- `severity.number` (number): 17 or more means ERROR or worse, and 13 to 16 means WARN. This is more reliable than the text level.
-- `severity.text` (text). Its casing varies between services (INFO, info, Information, ERROR, error).
-- `body` (text): the log message.
-- `traceId` and `spanId`: they link a log line to a trace.
+Write filters as one `query_string`. It's flat, so there are no nested brackets to get wrong:
 
-Examples:
+`{"query": {"query_string": {"query": "resource.service.name.keyword:payment AND severity.number:>=13 AND @timestamp:>=now-15m"}}, "sort": [{"@timestamp": "desc"}], "_source": ["@timestamp", "body", "attributes.exception.message", "traceId"]}`
 
-- Count checkout errors in the last hour: `opensearch__CountTool` with index `otel-logs-*` and body `{"query": {"bool": {"filter": [{"term": {"resource.service.name.keyword": "checkout"}}, {"range": {"severity.number": {"gte": 17}}}, {"range": {"@timestamp": {"gte": "now-1h", "format": "strict_date_optional_time||epoch_millis"}}}]}}}`
-- Latest error messages: `opensearch__SearchIndexTool` on `otel-logs-*` with the same filter, `"size": 10` and `"sort": [{"@timestamp": "desc"}]`.
-- Which services log the most errors: a terms aggregation on `resource.service.name.keyword` with `"size": 0`.
+- `opensearch__SearchIndexTool`: `query_dsl` is the whole body above. The query goes under `"query"`, and `sort` and `_source` sit beside it. `size` is a separate argument. A bare `{"bool": ...}` fails.
+- `opensearch__CountTool`: `body` is just the `{"query": {...}}` part.
+- Always set `_source` to the fields you need, because full log documents are large.
+- In `query_string`: `field:value`, `field:>=13`, `@timestamp:>=now-15m`, `AND` / `OR`, `field:(a OR b)`, and quoted phrases like `body:"Payment request failed"`.
+
+## Fields
+
+- `@timestamp`: when the log was written.
+- `resource.service.name.keyword`: the service, for example `payment`, `checkout` or `cart`.
+- `severity.number`: 13 to 16 is WARN, and 17 or more is ERROR. Many failures are logged as WARN, including failed payments, so use `severity.number:>=13` when looking for problems.
+- `body`: the log message.
+- `attributes.exception.message`: the error detail on failure logs.
+- `traceId.keyword`: one request across all services.
+- `attributes.demo.product.name.keyword`: the product, on product catalog logs.
+
+## Recipes
+
+- Recent failures in a service: SearchIndexTool, size 10, with the example body above.
+- Failed payments log as `Payment request failed. ...` (WARN) in the payment service.
+- Which products a set of failed requests involved:
+  1. Take the `traceId`s from the failure logs.
+  2. SearchIndexTool with size 0 and `{"query": {"query_string": {"query": "traceId.keyword:(id1 OR id2 OR id3)"}}, "aggs": {"products": {"terms": {"field": "attributes.demo.product.name.keyword", "size": 20}}}}`.
+  3. The product catalog logs each product it looked up during those requests.
+- Which services log the most problems: size 0 with `{"query": {"query_string": {"query": "severity.number:>=13 AND @timestamp:>=now-15m"}}, "aggs": {"services": {"terms": {"field": "resource.service.name.keyword"}}}}`.
