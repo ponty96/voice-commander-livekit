@@ -191,6 +191,40 @@ tool_end    { id, output, error, at }        same id; error is true if the tool 
 
 `at` is a millisecond timestamp. `output` is the tool's real result, cut to 2000 characters for the page (the LLM still gets all of it). A `tool_end` is always sent, also when the tool fails. If sending an event fails, the tool call still goes ahead. The agent terminal logs the same calls as `[tool] <name> <input>` lines.
 
+## Investigation reports
+
+Every call is recorded, and a structured report is written after it ends. Open http://localhost:3000/reports, or look in `reports/investigations/` on the host. Ending a call takes you to the list with that call highlighted.
+
+Each investigation (one call) has its own folder:
+
+```text
+reports/investigations/inv_20261020T171851Z_vc-room-46e0/
+  events.jsonl        written during the call by code: messages and tool calls, append-only
+  evidence/call_001.txt  each tool call's full output (redacted, at most 256 KB)
+  record.json         the facts (status, timing, messages, tool calls, metrics), built by code
+  report.json         facts + analysis, written by the report model after the call
+  report.error.json   only if the report couldn't be generated
+  evaluation.json     yours to add later (schema eval-1.0 in src/reporting/schema.ts); the agent never reads it
+```
+
+- **Facts come from code; the analysis comes from a model.** `report.json` has `facts` (copied from the record) and `analysis` (the only part the model writes). The analysis lists the claims the agent actually made, with the message each came from. Each claim cites tool calls and exact quotes from their output, and records how well that evidence backs it (`support`) and how sure the agent sounded (`expressedConfidence`).
+- **References are checked.** Code checks every cited call ID, message ID and quote against the record before saving. Anything that doesn't check out is removed, and a claim left without evidence becomes `unsupported`. Each correction is listed in `analysis.validation`. Invalid model output gets one retry, and nothing is saved if it fails again.
+- **Status:**
+  - `completed`: the agent answered after its last tool call.
+  - `interrupted`: the call ended during a tool call or an answer, or without an answer after the last tool.
+  - `abandoned`: nothing was asked, so there's no report.
+  - `incomplete`: the agent crashed before the call ended.
+- **Model:** `REPORT_MODEL`, default `openai/gpt-4.1`, through LiveKit Inference. Reports are written after the caller has left, so they don't affect voice latency. Generation gets up to 100 seconds.
+- **Regenerate or fill in reports** (for example with another model):
+
+```bash
+docker compose exec agent pnpm --filter @vic/agent report <investigationId> --force --model openai/gpt-4.1
+docker compose exec agent pnpm --filter @vic/agent report --all
+```
+
+- **Redaction:** the values of environment variables whose names contain KEY, SECRET, TOKEN, PAT or PASSWORD are removed from everything recorded, along with bearer tokens, `token=` style values and email addresses. Card digits and user IDs are kept as evidence.
+- **Tool calls now time out after 30 seconds** (status `timeout`).
+
 ## Call tree
 
 How the code calls into itself today, from each entry point down. One line per function. Library calls are in brackets.
@@ -205,6 +239,9 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
 └─ defineAgent.entry(ctx)               src/agent.ts            runs once per room the agent is sent to
    ├─ [ctx.connect]                                             joins the room
    ├─ createPublisher(room)             src/tools/events.ts     sends StepEvents on vic.steps; never throws
+   ├─ InvestigationRecorder.start(room) src/reporting/recorder.ts  creates reports/investigations/inv_<time>_<room>/; writes never throw
+   │  ├─ recorder.config(llm, instr, tools)                     model, instructions hash and tool list (again once MCP loads)
+   │  └─ recorder.message(role, text)   src/reporting/recorder.ts  each final user and agent message (from ConversationItemAdded)
    ├─ wrapCustomTool(tool, publish)     src/tools/index.ts      each custom tool as an LLM tool, so the call starts without MCP
    │  └─ tools.config.ts (default)      tools.config.ts         custom tools, each made with defineTool()
    │     ├─ defineTool(tool)            src/tools/define.ts     keeps Zod types while writing execute(); erases them for the list
@@ -217,7 +254,16 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    ├─ new voice.Agent({instructions, tools})                    Commander's persona and system context, starting with the custom tools
    ├─ new voice.AgentSession({stt, llm, tts})                   Deepgram, GPT-4.1 mini, Cartesia via LiveKit Inference
    ├─ session.on(...)                                           logs user transcripts, state changes and replies to the terminal
-   ├─ session.on(Close) → [ctx.shutdown]                        ends the job when the session closes, so shutdown callbacks run
+   ├─ session.on(Close) → [ctx.shutdown]                        remembers the close reason, ends the job so shutdown callbacks run
+   ├─ (shutdown callback)               src/agent.ts            after the caller has left
+   │  ├─ closeMcp()                                             closes the MCP connections
+   │  ├─ recorder.end(reason)           src/reporting/recorder.ts  session_end event, then writeRecord
+   │  │  └─ writeRecord → buildFacts    src/reporting/recorder.ts  record.json: status, messages, tool calls, metrics, from events only
+   │  └─ generateReport(dir)            src/reporting/generate.ts  at most 100s; failures go to report.error.json
+   │     ├─ liveKitComplete(model)      src/reporting/generate.ts  REPORT_MODEL via LiveKit Inference, JSON schema from Zod
+   │     ├─ Analysis.safeParse          src/reporting/schema.ts    one retry with the errors if the output is invalid
+   │     ├─ validateAnalysis(…)         src/reporting/generate.ts  checks call IDs, message IDs and quotes (quoteFound); downgrades claims
+   │     └─ writeFileAtomic(report.json) src/reporting/recorder.ts temp file, then rename
    ├─ [session.start]                                           starts listening; publishes transcripts and lk.agent.state
    ├─ [session.say]                                             speaks the greeting
    ├─ loadTools({customTools, publish}) src/tools/index.ts      after the greeting: custom tools plus every MCP server's tools
@@ -236,10 +282,13 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
    │  │  └─ runTool({name, args, run})  src/tools/events.ts     shared wrapper for custom and MCP tools (both kinds)
    │  │     ├─ formatInput(args)        src/tools/events.ts     arguments as "key=value" text
    │  │     ├─ publish(tool_start)
+   │  │     ├─ record.toolStart(…)      src/reporting/recorder.ts  call_NNN with the same event id; real (redacted) arguments
+   │  │     ├─ withTimeout(run, 30s)    src/tools/events.ts     status timeout if the tool takes longer
    │  │     ├─ run()                                            custom: tool.execute(args); MCP: [client.callTool] then callResultToText
    │  │     │  └─ callResultToText(res) src/tools/mcp.ts        joins the text content; throws if isError
    │  │     ├─ formatOutput(value)      src/tools/events.ts     strings as-is, anything else as JSON
-   │  │     └─ publish(tool_end)                                same id, error: true if run() threw
+   │  │     ├─ publish(tool_end)                                same id, error: true if run() threw
+   │  │     └─ record.toolEnd(…)        src/reporting/recorder.ts  status, duration, evidence/call_NNN.txt
    │  ├─ knowledgeInstructions(conns)   src/tools/index.ts      turns the knowledge files into "How to use the <server> tools" sections
    │  ├─ (duplicate names)                                      throw; loadTools closes its connections first
    │  └─ close() → closeConnections     src/tools/mcp.ts        closes every MCP connection, logging any that fail; run at shutdown
@@ -252,13 +301,21 @@ cli.runApp(new ServerOptions(...))      src/agent.ts            registers the wo
 
 ```
 GET /api/token                          api/token/route.ts       checks the env vars, mints a token for a new vc-room-* room
+GET /api/reports/[id]                   api/reports/[id]/route.ts  downloads report.json (or record.json while it's pending)
+
+ReportsPage  (/reports)                 reports/page.tsx         every investigation: status, duration, tool calls, headline
+├─ listInvestigations()                 lib/reports.ts           reads REPORTS_DIR (mounted read-only in Docker)
+└─ RefreshWhile(active)                 reports/refresh.tsx      refreshes every 5s while a call or report is pending
+ReportPage  (/reports/[id])             reports/[id]/page.tsx    claims with support and quotes, limitations, tool calls with output, transcript
+├─ getInvestigation(id)                 lib/reports.ts           report.json, else record.json; ids are checked, no path traversal
+└─ readEvidence(id, file)               lib/reports.ts           one tool call's evidence file
 
 RootLayout                              layout.tsx               loads the fonts and global styles
-├─ Home  (/)                            page.tsx                 landing page; Join links to /call
+├─ Home  (/)                            page.tsx                 landing page; Join links to /call, plus a link to /reports
 └─ CallPage  (/call)                    call/page.tsx            creates the session and starts it with the mic on
    ├─ [TokenSource.literal → fetch /api/token]                   gets serverUrl and token for the session
    ├─ [useSession → session.start]                               connects to the room; records a mic error if access is blocked
-   ├─ endCall()                         call/page.tsx            ends the session and goes back to /
+   ├─ endCall()                         call/page.tsx            ends the session and opens /reports?room=<room>
    ├─ AgentStepsProvider                call/use-agent-steps.tsx listens on vic.steps and keeps the list of tool steps
    │  ├─ CallHeader                     call/call-header.tsx     room name, call timer and connection pill
    │  │  └─ useElapsed(running)         call/call-header.tsx     mm:ss since the call connected

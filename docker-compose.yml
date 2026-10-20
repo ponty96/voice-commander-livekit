@@ -19,10 +19,14 @@ services:
       JAEGER_URL: http://jaeger:16686/jaeger/ui
       # What the agent is investigating, relative to apps/agent. Point it at another file to switch apps.
       SYSTEM_CONTEXT_PATH: ${SYSTEM_CONTEXT_PATH:-context/astronomy-shop.md}
+      # Model that writes the investigation report after each call.
+      REPORT_MODEL: ${REPORT_MODEL:-openai/gpt-4.1}
     volumes:
       # Edit context and skill files without rebuilding; restart the agent to load them.
       - ./apps/agent/context:/app/apps/agent/context:ro
       - ./apps/agent/skills:/app/apps/agent/skills:ro
+      # Investigation records and reports, kept on the host.
+      - ./reports:/app/reports
     networks: [default, astronomy-shop]
     # Real-time audio: ask for a bigger CPU share than the default 1024 when the
     # shop's containers (its load generator above all) keep Docker's CPUs busy.
@@ -36,6 +40,8 @@ services:
       LIVEKIT_URL: ${LIVEKIT_URL}
       LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+    volumes:
+      - ./reports:/app/reports:ro
     ports:
       - '${WEB_PORT:-3000}:3000'
     restart: unless-stopped

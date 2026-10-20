@@ -42,8 +42,10 @@ export default function CallPage() {
   }, []);
 
   const endCall = async () => {
+    const room = session.room.name;
     await session.end();
-    router.push('/');
+    // The report for this call is written in the background; the list highlights it.
+    router.push(room ? `/reports?room=${encodeURIComponent(room)}` : '/');
   };
 
   return (

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { llm } from '@livekit/agents';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { CustomTool } from './define.js';
+import type { ToolRecorder } from '../reporting/recorder.js';
 import { type Publish, createRedactor, runTool } from './events.js';
 import { type McpServerConnection, callResultToText, closeConnections, connectMcpServers, mcpToolName } from './mcp.js';
 
@@ -43,12 +44,12 @@ export function knowledgeInstructions(connections: McpServerConnection[]) {
 }
 
 /** One tools.config.ts entry as an LLM tool that runs through runTool. Needs no connection. */
-export function wrapCustomTool(tool: CustomTool, publish: Publish, redact?: Redact) {
+export function wrapCustomTool(tool: CustomTool, publish: Publish, redact?: Redact, record?: ToolRecorder) {
   return llm.tool({
     name: tool.name,
     description: tool.description,
     parameters: tool.parameters,
-    execute: (args) => runTool({ name: tool.name, args, publish, redact, run: () => tool.execute(args) }),
+    execute: (args) => runTool({ name: tool.name, args, publish, redact, record, run: () => tool.execute(args) }),
   });
 }
 
@@ -59,6 +60,7 @@ export function wrapMcpTool(
   tool: McpServerConnection['tools'][number],
   publish: Publish,
   redact: Redact,
+  record?: ToolRecorder,
 ) {
   const name = mcpToolName(server, tool.name);
   return llm.tool({
@@ -71,6 +73,8 @@ export function wrapMcpTool(
         args,
         publish,
         redact,
+        server,
+        record,
         run: async () => {
           const result = await client.callTool({ name: tool.name, arguments: args as Record<string, unknown> });
           return callResultToText(result as CallToolResult);
@@ -89,10 +93,12 @@ export function wrapMcpTool(
 export async function loadTools({
   customTools,
   publish,
+  record,
   mcpConfigPath = DEFAULT_MCP_CONFIG,
 }: {
   customTools: CustomTool[];
   publish: Publish;
+  record?: ToolRecorder;
   mcpConfigPath?: string;
 }) {
   const { connections, secrets } = await connectMcpServers(mcpConfigPath);
@@ -105,9 +111,10 @@ export async function loadTools({
       tools.set(tool.name, tool);
     };
 
-    for (const tool of customTools) add(wrapCustomTool(tool, publish, redact), 'tools.config.ts');
+    for (const tool of customTools) add(wrapCustomTool(tool, publish, redact, record), 'tools.config.ts');
     for (const { server, client, tools: mcpTools } of connections) {
-      for (const tool of mcpTools) add(wrapMcpTool(server, client, tool, publish, redact), `MCP server ${server}`);
+      for (const tool of mcpTools)
+        add(wrapMcpTool(server, client, tool, publish, redact, record), `MCP server ${server}`);
     }
 
     return { tools: [...tools.values()], instructions: knowledgeInstructions(connections), close };
